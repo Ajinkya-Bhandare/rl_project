@@ -13,7 +13,7 @@ class GridWorldEnv(gym.Env):
         self.observation_space = spaces.Box(
             low=0, high=1, shape=(view_size, view_size), dtype=np.uint8
         )
-        self.action_space = spaces.Discrete(4)  # 0=UP, 1=DOWN, 2=LEFT, 3=RIGHT
+        self.action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
 
         self.reset()
 
@@ -29,35 +29,32 @@ class GridWorldEnv(gym.Env):
         return self._get_obs()
 
     def step(self, action):
+        # Interpret continuous action as (dy, dx)
+        dy, dx = action
         y, x = self.agent_pos
-        if action == 0:    # UP
-            new_pos = (y - 1, x)
-        elif action == 1:  # DOWN
-            new_pos = (y + 1, x)
-        elif action == 2:  # LEFT
-            new_pos = (y, x - 1)
-        elif action == 3:  # RIGHT
-            new_pos = (y, x + 1)
+
+        # Round and clip movement to stay on the grid
+        new_y = np.clip(int(round(y + dy)), 0, self.grid_size - 1)
+        new_x = np.clip(int(round(x + dx)), 0, self.grid_size - 1)
+        new_pos = (new_y, new_x)
 
         reward = 0
         done = False
 
-        # Check bounds and collisions
-        if (0 <= new_pos[0] < self.grid_size and
-            0 <= new_pos[1] < self.grid_size and
-            self.map[new_pos] == 1):
+        # Check bounds and wall collision
+        if self.map[new_pos] == 1:
             self.agent_pos = new_pos
             if self.explored[new_pos] == 0:
                 reward = 1
                 self.explored[new_pos] = 1
         else:
-            reward = -10  # Penalty for hitting wall
+            reward = -10  # hit wall
 
         self.steps += 1
         self.total_reward += reward
         done = self.steps >= self.max_steps or np.all(self.explored[self.map == 1])
-
         return self._get_obs(), reward, done, {}
+
 
     def _get_obs(self):
         y, x = self.agent_pos
