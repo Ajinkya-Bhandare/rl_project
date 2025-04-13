@@ -28,6 +28,8 @@ class GridWorldEnv(gym.Env):
         free_cells = np.argwhere(self.map == 1)
         idx = np.random.choice(len(free_cells))
         self.agent_pos = tuple(free_cells[idx])
+        self.explored[self.agent_pos] = 1
+
 
         self.steps = 0
         self.total_reward = 0

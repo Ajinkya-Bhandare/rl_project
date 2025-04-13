@@ -1,100 +1,74 @@
-import gym
+import matplotlib.pyplot as plt
 import numpy as np
-from gym import spaces
-from perlin_noise import perlin_noise
-from flood_fill import flood_fill
+import torch
+from exploration_env import GridWorldEnv
+from ppo_agent import PPOAgent
 
-class GridWorldEnv(gym.Env):
-    def __init__(self, grid_size=100, scale=10, view_size=5, max_steps=1000):
-        super(GridWorldEnv, self).__init__()
-        self.grid_size = grid_size
-        self.scale = scale
-        self.view_size = view_size
-        self.max_steps = max_steps
+env = GridWorldEnv()
+obs_shape = env.observation_space.shape
+n_actions = env.action_space.n
+agent = PPOAgent(obs_shape, n_actions)
 
-        self.observation_space = spaces.Box(
-            low=0, high=1, shape=(view_size, view_size), dtype=np.uint8
-        )
-        self.action_space = spaces.Discrete(4)  # 0=UP, 1=DOWN, 2=LEFT, 3=RIGHT
+num_episodes = 500
+all_rewards = []
+all_coverages = []
 
-        self.reset()
+for episode in range(num_episodes):
+    state = env.reset()
+    done = False
 
-    def reset(self):
-        raw_map = perlin_noise(self.grid_size, self.grid_size, scale=self.scale)
-        self.map = (raw_map > 0).astype(np.uint8)  # 1 = free, 0 = wall
-        self.explored = np.zeros_like(self.map)
+    states = []
+    actions = []
+    rewards = []
+    dones = []
+    log_probs = []
+    total_reward = 0
 
-        # Random free start
-        free_cells = np.argwhere(self.map == 1)
-        idx = np.random.choice(len(free_cells))
-        self.agent_pos = tuple(free_cells[idx])
-        self.explored[self.agent_pos] = 1
+    while not done:
+        action, log_prob, _ = agent.get_action(state)
+        next_state, reward, done, _ = env.step(action)
+        #env.render()  # Show map
 
-        self.steps = 0
-        self.total_reward = 0
-        return self._get_obs()
+        states.append(state)
+        actions.append(action)
+        rewards.append(reward)
+        dones.append(done)
+        log_probs.append(log_prob)
 
-    def step(self, action):
-        y, x = self.agent_pos
-        if action == 0:    # UP
-            new_pos = (y - 1, x)
-        elif action == 1:  # DOWN
-            new_pos = (y + 1, x)
-        elif action == 2:  # LEFT
-            new_pos = (y, x - 1)
-        elif action == 3:  # RIGHT
-            new_pos = (y, x + 1)
+        total_reward += reward
+        state = next_state
 
-        reward = 0
-        done = False
+    # Estimate returns and advantages
+    _, last_value = agent.model(torch.tensor(state).unsqueeze(0).float())
+    returns = agent.compute_returns(rewards, dones, last_value.item())
+    values = [agent.model(torch.tensor(s).unsqueeze(0).float())[1].item() for s in states]
+    advantages = np.array(returns) - np.array(values)
 
-        # Check bounds and collisions
-        if (0 <= new_pos[0] < self.grid_size and
-            0 <= new_pos[1] < self.grid_size and
-            self.map[new_pos] == 1):
-            self.agent_pos = new_pos
-            if self.explored[new_pos] == 0:
-                reward = 1
-                self.explored[new_pos] = 1
-        else:
-            reward = -10  # Penalty for hitting wall
+    agent.update(states, actions, log_probs, returns, advantages)
+    all_rewards.append(total_reward)
 
-        self.steps += 1
-        self.total_reward += reward
-        done = self.steps >= self.max_steps or np.all(self.explored[self.map == 1])
+    # Exploration stats
+    explored_count = np.sum(env.explored[env.map == 1])
+    total_free = np.sum(env.map == 1)
+    explored_percent = 100 * explored_count / total_free if total_free > 0 else 0
+    all_coverages.append(explored_percent)
 
-        return self._get_obs(), reward, done, {}
+    print(f"Episode {episode + 1}: Total Reward = {total_reward}, Coverage = {explored_percent:.2f}%", flush=True)
 
-    def _get_obs(self):
-        y, x = self.agent_pos
-        half = self.view_size // 2
-        obs = np.zeros((self.view_size, self.view_size), dtype=np.uint8)
+# Plot reward curve
+plt.figure()
+plt.plot(all_rewards)
+plt.xlabel("Episode")
+plt.ylabel("Total Reward")
+plt.title("PPO Training on GridWorld")
+plt.grid(True)
+plt.show()
 
-        for dy in range(-half, half + 1):
-            for dx in range(-half, half + 1):
-                ny, nx = y + dy, x + dx
-                if 0 <= ny < self.grid_size and 0 <= nx < self.grid_size:
-                    obs[dy + half, dx + half] = self.map[ny, nx]
-        return obs
-
-    def render(self, mode='human'):
-        import matplotlib.pyplot as plt
-        import matplotlib.colors as mcolors
-
-        vis = np.zeros((self.grid_size, self.grid_size, 3), dtype=np.float32)
-        vis[self.map == 1] = [1, 1, 1]           # White for unexplored
-        vis[self.explored == 1] = [0.3, 0.6, 1]  # Light blue for explored
-        vis[self.map == 0] = [0, 0, 0]           # Black for walls
-
-        y, x = self.agent_pos
-        vis[y, x] = [1, 0, 0]  # Red for agent
-
-        explored_count = np.sum(self.explored[self.map == 1])
-        total_free = np.sum(self.map == 1)
-        percent = 100 * explored_count / total_free if total_free > 0 else 0
-
-        plt.imshow(vis)
-        plt.title(f"Exploration Progress: {percent:.2f}% covered")
-        plt.axis('off')
-        plt.pause(0.01)
-        plt.clf()
+# Plot coverage curve
+plt.figure()
+plt.plot(all_coverages)
+plt.xlabel("Episode")
+plt.ylabel("Explored %")
+plt.title("Exploration Coverage Over Time")
+plt.grid(True)
+plt.show()

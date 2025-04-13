@@ -61,7 +61,7 @@ class PPOAgent:
         advantages = torch.tensor(advantages).float().detach()
 
         for _ in range(4):  # Multiple epochs
-            logits, values = self.model(states.unsqueeze(1))
+            logits, values = self.model(states)
             probs = torch.softmax(logits, dim=-1)
             dist = torch.distributions.Categorical(probs)
             log_probs = dist.log_prob(actions)
