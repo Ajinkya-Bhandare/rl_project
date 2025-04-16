@@ -44,17 +44,19 @@ class DDPGAgent:
         self.critic_target.load_state_dict(self.critic.state_dict())
 
         self.buffer = deque(maxlen=buffer_size)
+        self.replay_buffer = self.buffer  # exposed for trainer
         self.gamma = gamma
         self.tau = tau
         self.batch_size = batch_size
-        self.actor_opt = optim.Adam(self.actor.parameters(), lr=lr)
-        self.critic_opt = optim.Adam(self.critic.parameters(), lr=lr)
+
+        self.actor_opt = optim.AdamW(self.actor.parameters(), lr=lr)
+        self.critic_opt = optim.AdamW(self.critic.parameters(), lr=lr)
 
     def act(self, state, noise_scale=0.1):
         state = torch.tensor(state).unsqueeze(0).float()
         action = self.actor(state).detach().numpy()[0]
-        action += noise_scale * np.random.randn(*action.shape)
-        return np.clip(action, -1.0, 1.0)
+        noise = np.random.normal(0, noise_scale, size=action.shape)
+        return np.clip(action + noise, -1.0, 1.0)
 
     def store(self, *transition):
         self.buffer.append(transition)
@@ -74,6 +76,9 @@ class DDPGAgent:
         next_states = torch.tensor(next_states).float()
         dones = torch.tensor(dones).float().unsqueeze(1)
 
+        # Optional reward normalization
+        rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-6)
+
         with torch.no_grad():
             next_actions = self.actor_target(next_states)
             target_q = self.critic_target(next_states, next_actions)
@@ -84,15 +89,16 @@ class DDPGAgent:
 
         self.critic_opt.zero_grad()
         critic_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=1.0)
         self.critic_opt.step()
 
-        # Actor update
         actor_loss = -self.critic(states, self.actor(states)).mean()
         self.actor_opt.zero_grad()
         actor_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=1.0)
         self.actor_opt.step()
 
-        # Soft updates
+        # Soft target updates
         for target, source in zip(self.actor_target.parameters(), self.actor.parameters()):
             target.data.copy_(self.tau * source.data + (1 - self.tau) * target.data)
         for target, source in zip(self.critic_target.parameters(), self.critic.parameters()):

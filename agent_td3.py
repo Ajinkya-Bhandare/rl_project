@@ -47,6 +47,8 @@ class TD3Agent:
         self.critic2_target.load_state_dict(self.critic2.state_dict())
 
         self.buffer = deque(maxlen=buffer_size)
+        self.replay_buffer = self.buffer  # exposed for training script
+
         self.gamma = gamma
         self.tau = tau
         self.batch_size = batch_size
@@ -55,15 +57,15 @@ class TD3Agent:
         self.noise_std = noise_std
         self.noise_clip = noise_clip
 
-        self.actor_opt = optim.Adam(self.actor.parameters(), lr=lr)
-        self.critic1_opt = optim.Adam(self.critic1.parameters(), lr=lr)
-        self.critic2_opt = optim.Adam(self.critic2.parameters(), lr=lr)
+        self.actor_opt = optim.AdamW(self.actor.parameters(), lr=lr)
+        self.critic1_opt = optim.AdamW(self.critic1.parameters(), lr=lr)
+        self.critic2_opt = optim.AdamW(self.critic2.parameters(), lr=lr)
 
     def act(self, state, noise_scale=0.1):
         state = torch.tensor(state).unsqueeze(0).float()
         action = self.actor(state).detach().numpy()[0]
-        action += noise_scale * np.random.randn(*action.shape)
-        return np.clip(action, -1.0, 1.0)
+        noise = np.random.normal(0, noise_scale, size=action.shape)
+        return np.clip(action + noise, -1.0, 1.0)
 
     def store(self, *transition):
         self.buffer.append(transition)
@@ -85,6 +87,9 @@ class TD3Agent:
         next_states = torch.tensor(next_states).float()
         dones = torch.tensor(dones).float().unsqueeze(1)
 
+        # Optional reward normalization
+        rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-6)
+
         with torch.no_grad():
             noise = (torch.randn_like(actions) * self.noise_std).clamp(-self.noise_clip, self.noise_clip)
             next_actions = (self.actor_target(next_states) + noise).clamp(-1.0, 1.0)
@@ -100,10 +105,12 @@ class TD3Agent:
 
         self.critic1_opt.zero_grad()
         critic1_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.critic1.parameters(), max_norm=1.0)
         self.critic1_opt.step()
 
         self.critic2_opt.zero_grad()
         critic2_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.critic2.parameters(), max_norm=1.0)
         self.critic2_opt.step()
 
         # Delay actor updates
@@ -111,6 +118,7 @@ class TD3Agent:
             actor_loss = -self.critic1(states, self.actor(states)).mean()
             self.actor_opt.zero_grad()
             actor_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=1.0)
             self.actor_opt.step()
 
             for target, source in zip(self.actor_target.parameters(), self.actor.parameters()):
